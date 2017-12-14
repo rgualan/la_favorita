@@ -1,10 +1,7 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-
-# C extensions
-*.so
-
+# Python files
+__pycache__/ # Byte-compiled / optimized / DLL files
+*.py[cod] # Byte-compiled / optimized / DLL files
+*.so # C extensions
 # Distribution / packaging
 .Python
 env/
@@ -22,13 +19,11 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
-
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
-
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
@@ -69,5 +64,29 @@ target/
 # Jupyter NB Checkpoints
 .ipynb_checkpoints/
 
+# R PROJECT
+/.Rproj.user
+/.RData
+/.Rhistory
+*-Ex.R # Example code in package build process
+/*.tar.gz # Output files from R CMD build
+/*.Rcheck/ # Output files from R CMD check
+.Rproj.user/ # RStudio files
+vignettes/*.html # produced vignettes
+vignettes/*.pdf # produced vignettes
+.httr-oauth # OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
+/*_cache/ # knitr and R markdown default cache directories
+/cache/ # knitr and R markdown default cache directories
+*.utf8.md # Temporary files created by R markdown
+*.knit.md # Temporary files created by R markdown
+
 # exclude data from source control by default
-/data/
+/data
+/input
+
+# exclude temporal files
+*.pid
+*.log
+ 
+
+

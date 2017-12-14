@@ -1,0 +1,1476 @@
+---
+title: 'Shopping for Insights - Favorita EDA'
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    number_sections: true
+    fig_caption: true
+    toc: true
+    fig_width: 7
+    fig_height: 4.5
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo=TRUE, error=FALSE)
+```
+
+# Introduction
+
+This is an initial Exploratory Data Analysis for the [Corporación Favorita Grocery Sales Forecasting](https://www.kaggle.com/c/favorita-grocery-sales-forecasting) competition with [tidy R](http://tidyverse.org/) and [ggplot2](http://ggplot2.tidyverse.org/).
+
+The aim of this challenge is to forecast more accurate product sales for the Ecuadorian supermarket chain [Corporación Favorita](http://www.corporacionfavorita.com/).
+
+The [data](https://www.kaggle.com/c/favorita-grocery-sales-forecasting/data) comes in the shape of multiple files. First, the *training* data (`../input/train.csv`) essentially contains the sales by date, store, and item. The *test* data (`../input/test.csv`) contains the same features without the sales information, which we are tasked to predict. The *train vs test split* is based on the *date*. In addition, some *test* items are not included in the *train* data.
+
+Furthermore, there are 5 additional data files that provide the following information:
+
+- `stores.csv`: Details about the stores, such as location and type.
+
+- `items.csv`: Item metadata, such as class and whether they are *perishable*. Note, that perishable items have [a higher scoring weight](https://www.kaggle.com/c/favorita-grocery-sales-forecasting/data) than others.
+
+- `transactions.csv`: Count of sales transactions for the *training data*
+
+- `oil.csv`: Daily oil price. This is relevant, because "Ecuador is an oil-dependent country and its economical health is highly vulnerable to shocks in oil prices." ([source](https://www.kaggle.com/c/favorita-grocery-sales-forecasting/data))
+
+- `holidays_events.csv`: Holidays in Ecuador. Some holidays can be *transferred* to another day (possibly from weekend to weekday).
+
+In addition, the [data description](https://www.kaggle.com/c/favorita-grocery-sales-forecasting/data) notes the importance of public sector pay days (on the 15th and the end of the month) as well as the impact of a major earthquake on April 16 2016.
+
+
+# Preparations {.tabset .tabset-fade .tabset-pills}
+
+## Load libraries
+
+We load a range of libraries for general data wrangling and general visualisation together with more specialised tools.
+
+```{r, message = FALSE}
+# general visualisation
+library('ggplot2') # visualisation
+library('scales') # visualisation
+library('grid') # visualisation
+library('gridExtra') # visualisation
+library('RColorBrewer') # visualisation
+library('corrplot') # visualisation
+
+# general data manipulation
+library('dplyr') # data manipulation
+library('readr') # input/output
+library('data.table') # data manipulation
+library('tibble') # data wrangling
+library('tidyr') # data wrangling
+library('stringr') # string manipulation
+library('forcats') # factor manipulation
+
+# specific visualisation
+library('ggfortify') # visualisation
+library('ggrepel') # visualisation
+library('treemapify') # visualisation
+#library('ggforce') # visualisation
+library('ggridges') # visualization
+
+# specific data manipulation
+library('broom') # data wrangling
+library('purrr') # string manipulation
+
+# Date plus forecast
+library('lubridate') # date and time
+library('timeDate') # date and time
+```
+
+## Helper functions
+
+We use the *multiplot* function, courtesy of [R Cookbooks](http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_(ggplot2)/) to create multi-panel plots. We also make use of a brief helper function to compute binomial confidence intervals.
+
+```{r}
+# Define multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+```{r}
+# function to extract binomial confidence levels
+get_binCI <- function(x,n) as.list(setNames(binom.test(x,n)$conf.int, c("lwr", "upr")))
+```
+
+## Load data
+
+We use *data.table's* fread function to speed up reading in the data. Note, that the uncompressed *training* data is 4.7 GB in size with 126 million rows. For the purpose of this exploration, we will only use 10% of this data.
+
+```{r warning=FALSE, results=FALSE}
+set.seed(1234)
+train <- sample_frac(as.tibble(fread('../input/train.csv')),0.1)
+test <- as.tibble(fread('../input/test.csv'))
+stores <- as.tibble(fread('../input/stores.csv'))
+items <- as.tibble(fread('../input/items.csv'))
+trans <- as.tibble(fread('../input/transactions.csv'))
+oil <- as.tibble(fread('../input/oil.csv'))
+holidays <- as.tibble(fread('../input/holidays_events.csv'))
+```
+
+
+# Overview: File structure and content {.tabset .tabset-fade .tabset-pills}
+
+As a first step we will have an overview of the individual data sets using the *summary* and *glimpse* tools.
+
+## Training data
+
+```{r}
+summary(train)
+```
+
+```{r}
+glimpse(train)
+```
+
+We find:
+
+- There is a unique *id* to label our observations. The *date* feature will need to be transformed to a better format.
+
+- The store numbers are integers (*store\_nbr*) ranging from 1 to 54. Item numbers (*item\_nbr*) are also encoded as integers. Both of these features will work better when encoded as factors.
+
+- *onpromotion* is a logical feature, describing whether the item in question had been assigned a special promotion pricing at the time in the specific store. This feature contains many NA values.
+
+- *unit_sales* is our target feature: How many units of the specific item were sold in that store on that day. Negative values mean that this particular item was returned ([source](https://www.kaggle.com/c/favorita-grocery-sales-forecasting/data)).
+
+
+## Test data:
+
+```{r}
+summary(test)
+```
+
+
+```{r}
+glimpse(test)
+```
+
+We find:
+
+- The test data contains the same range of *store\_nbr*. The described difference in *dates* is not visible in this representation.
+
+- We already see that there are some *item\_nbr* that cannot be found in the *train* data.
+
+- Interestingly, there are no NAs in the *onpromotion* feature here.
+
+
+## Stores
+
+```{r}
+summary(stores)
+```
+
+```{r}
+glimpse(stores)
+```
+
+We find:
+
+- Stores are identified by their *city* (e.g. "Quito") and *state* (e.g. "Pichincha"), according to their *store\_nbr* which connects this information to the *train/test* data. Along with the *type* of the store, these should be encoded as factors.
+
+- *cluster* describes a "grouping of similar stores" ([source](https://www.kaggle.com/c/favorita-grocery-sales-forecasting/data)). We will find out what exactly that means.
+
+
+## Items
+
+```{r}
+summary(items)
+```
+
+```{r}
+glimpse(items)
+```
+
+We find:
+
+- The *items* are grouped into a broad *family* (e.g. "BREAD/BAKERY") and an integer *class* column. Once more, these will be factors.
+
+- *perishable*, an identifier whether the item will go bad, is encoded as an integer but would work better as a logical feature, since the only values appear to be "0 vs 1": perishable (e.g. milk) vs not perishable (e.g. DVDs).
+
+- *item\_nbr* is of course the key column relating this data set to *train/test*
+
+
+## Transactions
+
+```{r}
+summary(trans)
+```
+
+```{r}
+glimpse(trans)
+```
+
+We find:
+
+- This data set gives us an additional total number of transactions per *store\_nbr* for a given *date*. This information is only available for the training data.
+
+
+## Oil
+
+```{r}
+summary(oil)
+```
+
+```{r}
+glimpse(oil)
+```
+
+We find that this is a simple time series of the oil price at a given date. There are a few NAs in the price (*dcoilwtico*) column. The *date* feature should be re-formated.
+
+
+## Holidays
+
+```{r}
+summary(holidays)
+```
+
+```{r}
+glimpse(holidays)
+```
+
+We find:
+
+- Holidays and special events also come in the shape of a time series with a *date* column.
+
+- There is a *type* of the holiday, a qualifier whether it's regional (*locale*) and in which region it applies (*locale\_name*), as well as the name of the holiday in the feature *description*.
+
+- *transferred* is a logical column indicating whether this specific holiday was moved to a different day that year.
+
+
+
+## Missing values
+
+
+```{r}
+sum(is.na(train))
+sum(is.na(test))
+sum(is.na(stores))
+sum(is.na(items))
+sum(is.na(trans))
+sum(is.na(oil))
+sum(is.na(holidays))
+sum(is.na(stores))
+```
+
+We find:
+
+- *train* contains the majority of readily accessible NAs in the *onpromotion* feature.
+
+- *oil* contains another 43 NAs for unknown oil prices.
+
+
+## Reformating features
+
+```{r}
+train <- train %>%
+  mutate(date = ymd(date),
+         store_nbr = as.factor(store_nbr),
+         item_nbr = as.factor(item_nbr))
+
+test <- test %>%
+  mutate(date = ymd(date),
+         store_nbr = as.factor(store_nbr),
+         item_nbr = as.factor(item_nbr))
+
+stores <- stores %>%
+  mutate(city = as.factor(city),
+         state = as.factor(state),
+         type = as.factor(type),
+         store_nbr = as.factor(store_nbr))
+
+items <- items %>%
+  mutate(family = as.factor(family),
+         class = as.factor(class),
+         perish = as.logical(perishable),
+         item_nbr = as.factor(item_nbr))
+
+trans <- trans %>%
+  mutate(date = ymd(date),
+         store_nbr = as.factor(store_nbr))
+
+oil <- oil %>%
+  mutate(date = ymd(date)) %>%
+  rename(oilprice = dcoilwtico)
+
+holidays <- holidays %>%
+  mutate(type = as.factor(type),
+         locale = as.factor(locale),
+         locale_name = as.factor(locale_name))
+```
+
+
+# Individual feature visualisations
+
+In the next step we will get an visual overview of the data by plotting the individual feature distribution for each data set separately. This will be the foundation for our analysis. From here, we will explore the impact of different features on the sales numbers as well as plan multi-feature comparisons.
+
+But first things first.
+
+
+## Training data
+
+Here we visualise the *training* data distributions as histograms (for numerical and date features) or as bar plots (for categorical features). Note the double-logarithmic axes on the *unit\_sales* plot:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 1", out.width="100%"}
+p1 <- train %>%
+  ggplot(aes(date)) +
+  geom_freqpoly(color = "blue", binwidth = 10, size = 1.2) +
+  coord_cartesian(ylim = c(38e3, 110e3))
+
+p2 <- train %>%
+  ggplot(aes(onpromotion, fill = onpromotion)) +
+  geom_bar() +
+  theme(legend.position = "none")
+
+p3 <- train %>%
+  filter(unit_sales > 0) %>%
+  ggplot(aes(unit_sales)) +
+  geom_histogram(fill = "red", binwidth = 0.1) +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "Positive unit sales")
+
+p4 <- train %>%
+  ggplot(aes(store_nbr, fill = store_nbr)) +
+  geom_bar() +
+  theme(legend.position = "none")
+
+p5 <- train %>%
+  ggplot(aes(item_nbr, fill = item_nbr)) +
+  geom_bar() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank())
+ 
+layout <- matrix(c(1,2,3,1,2,3,1,2,3,4,4,4,4,4,4,5,5,5,5,5,5),7,3,byrow=TRUE)
+multiplot(p1, p2, p3, p4, p5, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+
+We find:
+
+- The number of *dates* in our data set shows an increasing trend over time, indicating rising sales and/or number of different units that are being sold.
+
+- Only a small fraction of items are *onpromotion* on for a larger fraction this information is not known. The majority of items are not on promotion.
+
+- The contribution per *store\_nbr* in our data set varies typically by about a factor of 3 (for the down-sampled *train* data). A single store (`store_nbr == 52`) has only a small number of entries. This strong variation could correspond to the size of the store.
+
+- The distribution of *item\_nbr* shows similarly strong variation between only a few and several thousand entries. This in only a first overview showcasing the variation in the feature, which is why we don't plot any numbers on the x-axis (which would not be readable for so many categorical features).
+
+- The positive *unit\_sales* distribution peaks below 10 units, and then swiftly declines afterwards. Note the double-logarithmic scales. Here we only plot the sales, not the returns. Note, that *unit\_sales* can correspond to an integer value (e.g. a bottle of wine) or a float value (e.g. 0.5 kg of cheese, to go with the wine).
+
+There are only a few returns (with negative *unit\_sales* numbers) and they are distributed in the following way:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 2", fig.height=4, out.width="100%"}
+train %>%
+  filter(unit_sales < 0) %>%
+  ggplot(aes(-unit_sales)) +
+  geom_histogram(fill = "blue", binwidth = 0.1) +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "Negative unit sales = returns")
+
+```
+
+We find that most returns are only a few units, but several of them go up to a 100 units and some to even higher (negative) numbers:
+
+```{r}
+train %>%
+  filter(unit_sales < 0) %>%
+  arrange(unit_sales) %>%
+  head(3)
+```
+
+I wonder what these items were. Let's find out by joining the *items* data set:
+
+```{r}
+train %>%
+  filter(unit_sales < -1000) %>%
+  left_join(items, by = "item_nbr") %>%
+  select(unit_sales, family, class, perishable)
+```
+
+Mostly grocery items together with personal care products and beverages. That doesn't tell us an aweful lot, but it was certainly worth checking.
+
+
+## Stores
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 3", out.width="100%"}
+p1 <- stores %>%
+  ggplot(aes(city, fill = city)) +
+  geom_bar() +
+  theme(legend.position = "none", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9))
+
+p2 <- stores %>%
+  ggplot(aes(state, fill = state)) +
+  geom_bar() +
+  theme(legend.position = "none", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9))
+
+p3 <- stores %>%
+  group_by(type) %>%
+  count() %>%
+  ggplot(aes(type , n, fill = type)) +
+  geom_col() +
+  geom_text(aes(type, n+0.7, label = sprintf("%i", n))) +
+  theme(legend.position = "none")
+
+p4 <- stores %>%
+  mutate(cluster = as.factor(cluster)) %>%
+  ggplot(aes(cluster, fill = cluster)) +
+  geom_bar() +
+  theme(legend.position = "none")
+
+layout <- matrix(c(1,2,1,2,1,2,3,4,3,4),5,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- The *cities* fall into four groups, with most of them having only a single store. Six cities have 2 or 3 stores. "Guayaquil" and the capital "Quito" are each in a group of their own with 8 and 18 stores, respectively.
+
+- The *city* distribution is reflected in the *state* distribution as well, with "Pichincha" having 19 stores, "Guayas" 11, and the rest between 1 and 3.
+
+- Among the *types*, we see that D and "C" are the most frequent, with "A" and "B" having similar medium frequency and "E" only accounting for 4 stores.
+
+- The *cluster* feature shows a range from 1 to 7.
+
+
+For a little extra visualisation here is a *treemap*, build using the `treemapify` [package](https://cran.r-project.org/web/packages/treemapify/index.html), which shows the grouping of *cities* by state in the *stores* data set. The numbers are logarithmically scaled to make the *cities* with fewer stores more visible. *City* names are white, *state* names are black:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 4", out.width="100%"}
+stores %>%
+  group_by(state, city) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(n = log10(n+1)) %>%
+  ggplot(aes(area = n, fill = city, label = city, subgroup = state)) +
+  geom_treemap() +
+  geom_treemap_subgroup_border() +
+  geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5, colour =
+                             "black", fontface = "italic", min.size = 0) +
+  geom_treemap_text(colour = "white", place = "topleft", reflow = T) +
+  theme(legend.position = "null") +
+  ggtitle("Cities grouped by states - tree map (logarithmic scaling)")
+```
+
+We find that most states only contain stores in a single *city*, but that "Los Rios" and "Pichincha" contain two and "Guayays" has four cities with *Favorita* stores.
+
+
+## Items
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 5", out.width="100%"}
+p1 <- items %>%
+  ggplot(aes(family, fill = family)) +
+  geom_bar() +
+  theme(legend.position = "none", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9))
+
+p2 <- items %>%
+  ggplot(aes(class, fill = class)) +
+  geom_bar() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+p3 <- items %>%
+  group_by(class) %>%
+  count() %>%
+  filter(n > 70) %>%
+  ggplot(aes(class , n, fill = class)) +
+  geom_col() +
+  theme(legend.position = "none") +
+  labs(x = "class - most frequent")
+
+p4 <- items %>%
+  ggplot(aes(perish, fill = perish)) +
+  geom_bar() +
+  theme(legend.position = "none")
+  
+layout <- matrix(c(2,3,4,2,3,4,1,1,1,1,1,1,1,1,1),5,3,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- The *class* feature has a large number of levels, suggesting a detailed sub-division, with larger variation between a few and more than 100 cases (upper left). In the upper middle plot we show the most frequent item *classes*, with "1016" being the most popular code.
+
+- About 1/4 of all items are *perishable*. This status will have a notable impact on our prediction models, because good predictions of *perishable* items are (understandably) rewarded with a bonus.
+
+- The *family* of the items is a broad grouping into what would correspond to an aisle or a section of a supermarket (e.g. "DELI" or "PET SUPPLIES"). The dominant role of "GROCERY I" helps us to understand why there is a large fraction of *perishable* items.
+
+
+Once more, a treemap is handy in visualising the grouping of *class* (white) by *family* (black):
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 6", out.width="100%"}
+items %>%
+  group_by(family, class) %>%
+  count() %>%
+  ungroup() %>%
+  filter(n > 1) %>%
+  mutate(n = log10(n+1)) %>%
+  ggplot(aes(area = n, fill = class, label = class, subgroup = family)) +
+  geom_treemap() +
+  geom_treemap_subgroup_border() +
+  geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5, colour =
+                             "black", fontface = "italic", min.size = 0) +
+  geom_treemap_text(colour = "white", place = "topleft", reflow = T) +
+  theme(legend.position = "null") +
+  ggtitle("Item classes grouped by family - tree map (logarithmic scaling)")
+```
+
+Those are *all* combinations of *class* with *family*. To my own surprise, this is still mostly readable. It certainly visualises the many different *classes* of items per *family*, or the sub-division of a section/aisle of the supermarket. If this plot is to busy for you, then you can easily adjust the `filter` to plot fewer combination. Keep in mind that the areas correspond to logarithmically-scaled counts.
+
+
+## Transactions
+
+Let's look at the time series of cumulative *transactions* per store. We start with the median number of transactions over all stores. The red line is a smoothing fit:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 7", out.width="100%"}
+trans %>%
+  group_by(date) %>%
+  summarise(med_trans = median(transactions)) %>%
+  ggplot(aes(date, med_trans)) +
+  geom_line(color = "black") +
+  geom_smooth(method = "loess", color = "red", span = 1/5)
+```
+
+We find that there is a strong spike before Christmas, with corresponding drops when the stores are presumably closed during the holidays. The smoothing fit emphasises slower varations on a time scale of months. Overall, the sales appear to be stable throughout this time range.
+
+
+The next plot plots the smoothed *transactions* time series for each individual store:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 8", out.width="100%"}
+trans %>%
+  ggplot(aes(date, transactions, color = store_nbr)) +
+  geom_smooth(method = "loess", span = 1/2, se = FALSE)
+```
+
+We can see the large contributions of a few stores, together with the average level of around 1000 transactions for the smaller ones. We also see that a few stores opened during the time frame and showing declining sales as (presumably) their novelty wears off.
+
+
+## Oil
+
+Here we plot the *oil price* over time together with its weekly changes (price - price 7 days later):
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 9", out.width="100%"}
+p1 <- oil %>%
+  ggplot(aes(date, oilprice)) +
+  geom_line(color = "black") +
+  geom_smooth(method = "loess", color = "red", span = 1/5)
+
+p2 <- oil %>%
+  mutate(lag7 = lag(oilprice,7)) %>%
+  mutate(diff = oilprice - lag7) %>%
+  filter(!is.na(diff)) %>%
+  ggplot(aes(date, diff)) +
+  geom_line(color = "black") +
+  geom_smooth(method = "loess", color = "red", span = 1/5) +
+  labs(y = "Weekly variations in Oil price")
+
+layout <- matrix(c(1,2),2,1,byrow=TRUE)
+multiplot(p1, p2, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- There are strong, long-term changes in oil price with an obvious drop in the second half of 2014. Overlayed on this long-term trend appear to be fluctuations on time scales of weeks and months.
+
+- The frequent downward trends are visible in the week-to-week variations. The strong dips and rises in the lower plot might have a stronger influence on buying behaviour than the long-term evolution.
+
+
+## Holidays
+
+Here we use two overview figures to make the individual plots more readable:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 10", out.width="100%"}
+p1 <- holidays %>%
+  ggplot(aes(type, fill = type)) +
+  geom_bar() +
+  theme(legend.position = "none")
+
+p2 <- holidays %>%
+  ggplot(aes(locale, fill = locale)) +
+  geom_bar() +
+  theme(legend.position = "none")
+
+p3 <- holidays %>%
+  group_by(description) %>%
+  count() %>%
+  arrange(desc(n)) %>%
+  head(12) %>%
+  ggplot(aes(description, n)) +
+  geom_col(fill = "blue") +
+  theme(legend.position = "none") +
+  coord_flip() +
+  labs(x = "description - most frequent", y = "Frequency")
+
+p4 <- holidays %>%
+  ggplot(aes(transferred, fill = transferred)) +
+  geom_bar() +
+  theme(legend.position = "none")
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 11", out.width="100%"}
+holidays %>%
+  ggplot(aes(locale_name, fill = locale_name)) +
+  geom_bar() +
+  theme(legend.position = "none", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9))
+```
+
+We find:
+
+- Mosts special days are of the *type* "Holiday" and are either of the *locale* "Local" or "National". Relatively few "Regional" holidays are present in our data.
+
+- The large number of national holidays is emphasised in the second plot, which shows the *locale\_name* of the event.
+
+- The lower left plot lists a few of the most frequent holiday *descriptions* (i.e. their names). Carnival is clearly important.
+
+- The majority of days off is not *transferred*.
+
+This *transferred* features works a little different from what you might assume at first. It is not directly related to `type == Transfer`, but is assigned to the **original holiday** day prior to the transfer. This can be seen when we group by *transferred* and *type*:
+
+
+```{r}
+holidays %>%
+  count(transferred, type)
+```
+
+What this means, is that a transferred holiday shows up twice in this data. First on its original *date*, but with a `transferred == TRUE` flag. This means that on this day there was no holiday. It was a (quasi) normal working day. Instead, the moved holiday has a `type == Transfer` and a `transferred == FALSE` on the new *date*. This is a non-working day now.
+
+
+# The goal: time series forecast
+
+The previous section provided a good first impression of the features in the various data sets. Now, before we go further in exploring the relations between these features, we will take a step back to visualise our overall goal in this competition: the accurate forecast of future sales numbers.
+
+In essence, this is a time-series forecasting problem. It is similar to the recent [Wiki-Trend Forecast](https://www.kaggle.com/headsortails/wiki-traffic-forecast-exploration-wtf-eda) competition, in that we have a large number of time series. However, here it should be easier to utilise the relations between the various time series parameters (e.g. *type* of item, location of *store*) to improve our prediction.
+
+
+The following plot shows a visual overview of the the time ranges in the *train* vs *test* data sets:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 12", fig.height = 3.5, out.width="100%"}
+foo <- train %>%
+  distinct(date) %>%
+  mutate(dset = "train")
+bar <- test %>%
+  distinct(date) %>%
+  mutate(dset = "test")
+
+foo <- foo %>%
+  bind_rows(bar) %>%
+  mutate(year = year(date))
+year(foo$date) <- 2017
+
+foo %>%
+  filter(!is.na(date)) %>%
+  ggplot(aes(date, year, color = dset)) +
+  geom_point(shape = "|", size = 10) +
+  scale_x_date(date_labels = "%B", date_breaks = "1 month") +
+  scale_y_reverse() +
+  theme(legend.position = "bottom", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9)) +
+  labs(color = "Data set") +
+  guides(color = guide_legend(override.aes = list(size = 4, pch = 15)))
+
+```
+
+We see again that our *training* data spans more than 4.5 years: from January 2013 up to mid August 2017. In contrast, the *test* data covers the 16 days from August 16th until August 31st.
+
+
+In this section we will plot a few example time series to get more of an idea of the problem. In order to produce these plots in a consistent way we will define a few helper functions first.
+
+```{r}
+plot_item_store <- function(inr,snr){
+  foo <- train %>%
+    filter(item_nbr == inr & store_nbr == snr) %>%
+    replace_na(list(onpromotion = FALSE))
+  
+  bar <- items %>%
+    filter(item_nbr == inr)
+  
+  foobar <- stores %>%
+    filter(store_nbr == snr)
+  
+  oil_back <- oil %>%
+    filter(date > min(foo$date) & date < max(foo$date))
+  oil_back <- oil_back %>%
+    mutate(oilprice = ( min(foo$unit_sales, na.rm = TRUE) +
+      (oilprice-min(oilprice, na.rm = TRUE))/(max(oilprice, na.rm = TRUE) - min(oilprice, na.rm = TRUE)) *
+        (max(foo$unit_sales, na.rm = TRUE) - min(foo$unit_sales, na.rm = TRUE)) ))
+  
+  foo %>%
+    ggplot(aes(date, unit_sales)) +
+    geom_line(data = oil_back, aes(date, oilprice), color = "grey70") +
+    geom_smooth(method = "loess", color = "blue", span = 1/2, linetype = 2) +
+    geom_point(color = ifelse(foo$onpromotion == FALSE, "black", "red")) +
+    labs(title = str_c("Item #",
+                       inr,
+                       " (family = ",
+                       str_to_lower(bar$family),
+                       ", class = ",
+                       bar$class ,
+                       ")\nStore #",
+                       snr,
+                       " (type = ",
+                       foobar$type,
+                       ", city = ",
+                       foobar$city,
+                       ")\nred = promo  -  light gray = oil price (scaled)"))
+}
+
+plot_item <- function(inr){
+  foo <- train %>%
+    filter(item_nbr == inr) %>%
+    replace_na(list(onpromotion = FALSE)) %>%
+    group_by(date) %>%
+    summarise(sales = sum(unit_sales),
+              onpromotion = max(onpromotion))
+  
+  bar <- items %>%
+    filter(item_nbr == inr)
+  
+  oil_back <- oil %>%
+    filter(date > min(foo$date) & date < max(foo$date))
+  oil_back <- oil_back %>%
+    mutate(oilprice = ( min(foo$sales, na.rm = TRUE) +
+      (oilprice-min(oilprice, na.rm = TRUE))/(max(oilprice, na.rm = TRUE) - min(oilprice, na.rm = TRUE)) *
+        (max(foo$sales, na.rm = TRUE) - min(foo$sales, na.rm = TRUE)) ))
+  
+  foo %>%
+    ggplot(aes(date, sales)) +
+    geom_line(data = oil_back, aes(date, oilprice), color = "grey70") +
+    geom_line(color = ifelse(foo$onpromotion == FALSE, "black", "red")) +
+    geom_smooth(method = "loess", color = "blue", span = 1/2) +
+    labs(y = "Total sales", title = str_c("Item #",
+                       inr,
+                       " (family = ",
+                       str_to_lower(bar$family),
+                       ", class = ",
+                       bar$class ,
+                       ")\nred = promo  -  light gray = oil price (scaled)"))
+}
+
+plot_item_zoom <- function(inr, date1, date2){
+  foo <- train %>%
+    filter(item_nbr == inr) %>%
+    replace_na(list(onpromotion = FALSE)) %>%
+    group_by(date) %>%
+    summarise(sales = sum(unit_sales),
+              onpromotion = max(onpromotion))
+  
+  bar <- items %>%
+    filter(item_nbr == inr)
+  
+  oil_back <- oil %>%
+    filter(date > min(foo$date) & date < max(foo$date))
+  oil_back <- oil_back %>%
+    mutate(oilprice = ( min(foo$sales, na.rm = TRUE) +
+      (oilprice-min(oilprice, na.rm = TRUE))/(max(oilprice, na.rm = TRUE) - min(oilprice, na.rm = TRUE)) *
+        (max(foo$sales, na.rm = TRUE) - min(foo$sales, na.rm = TRUE)) ))
+  
+  foo %>%
+    ggplot(aes(date, sales), color = onpromotion) +
+    geom_line(data = oil_back, aes(date, oilprice), color = "grey70") +
+    geom_line() +
+    geom_point(data = (foo %>% filter(onpromotion == TRUE)), aes(date, sales), color = "red") +
+    geom_smooth(method = "loess", color = "blue", span = 1/2) +
+    ##facet_zoom(x = (date > ymd(as.character(date1)) & date < ymd(as.character(date2)))) +
+    labs(y = "Total sales", title = str_c("Item #",
+                       inr,
+                       " (family = ",
+                       str_to_lower(bar$family),
+                       ", class = ",
+                       bar$class ,
+                       ")\nred = promo  -  light gray = oil price (scaled)"))
+}
+
+plot_family_store_zoom <- function(fam, snr, date1, date2){
+  bar <- items %>% mutate(item_nbr = as.character(item_nbr))
+  
+  foo <- train %>%
+    mutate(item_nbr = as.character(item_nbr)) %>%
+    left_join(bar, by = "item_nbr") %>%
+    filter(family == fam & store_nbr == snr) %>%
+    group_by(date) %>%
+    summarise(sales = sum(unit_sales))
+
+  foobar <- stores %>%
+    filter(store_nbr == snr)
+  
+  oil_back <- oil %>%
+    filter(date > min(foo$date) & date < max(foo$date))
+  oil_back <- oil_back %>%
+    mutate(oilprice = ( min(foo$sales, na.rm = TRUE) +
+      (oilprice-min(oilprice, na.rm = TRUE))/(max(oilprice, na.rm = TRUE) - min(oilprice, na.rm = TRUE)) *
+        (max(foo$sales, na.rm = TRUE) - min(foo$sales, na.rm = TRUE)) ))
+  
+  foo %>%
+    ggplot(aes(date, sales)) +
+    geom_line(data = oil_back, aes(date, oilprice), color = "grey70") +
+    geom_line() +
+    geom_smooth(method = "loess", color = "blue", span = 1/2, linetype = 1) +
+    #facet_zoom(x = (date > ymd(as.character(date1)) & date < ymd(as.character(date2)))) +
+    labs(title = str_c("Family = ",
+                       fam,
+                       " - Store #",
+                       snr,
+                       " (type = ",
+                       foobar$type,
+                       ", city = ",
+                       foobar$city,
+                       ")\nlight gray = oil price (scaled)"))
+}
+```
+
+
+Our first helper function allows us to plot the time series of a single item in a single store:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 13", out.width="100%"}
+plot_item_store(1503844,1)
+```
+
+Here, the plot title contains the information about the `item` classification (*class* and *family*) as well as the `store` *type* and *city*. In red, we plot those times when the item was *on promotion* (for simplicity, NAs are plotted as not-on-promotion values). The dashed blue line is a smoothing (loess) fit with corresponding gray confidence range. This allows us to judge to long-term variation. Finally, the light-gray curve in the background is the oil price during this time range and arbitrarily scaled to the y-axis range of the plot.
+
+In this example, we see that the *unit\_sales* had strong short-term variations superimposed on a relatively stable long-term trend. Promotions (in red) seem to have a positive impact on the sales numbers in most cases. Keep in mind that we only use 10% of *training* data values.
+
+This helper function is easily generalised to plot a time series of cumulative *unit\_sales* for a specific *item* in all stores:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 14", fig.height=4, out.width="100%"}
+plot_item(1503844)
+```
+
+Here we see that the long-term trend is much more stable. We also use a connected line instead of data points. This emphasises the short-term variations and also the gaps in information for this particular product. These gaps might be due to our 10% sampling, but I think this is statistically unlikely. There is a higher probability that those time ranges are missing in our data set.
+
+In this plot, the *onpromotion* flag (red) is set if one of the stores has a promotion for this item on this *date*.
+
+
+Because such a busy time series can become difficult to read, we enhance our helper function with a *zoom*, courtesy of the [ggforce package](https://cran.r-project.org/web/packages/ggforce). Here we plot the *promotion* dates as red data points:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 15", out.width="100%"}
+plot_item_zoom(1503844, 20161101, 20170201)
+```
+
+In the zoom-in region we can clearly see the weekly variations. In this time series the *promotion* status seems not to have a significant impact. However, it is important to realise that this graph combines sales from all stores and that not many of them will have the same *promotions* at the same time. 
+
+
+The idea of plotting a single *item_nbr* can be extended towards visualising all (cumulative) sales of a certain *family* of items. Here we define again a zoom to study short-term variations:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 16", out.width="100%"}
+plot_family_store_zoom("GROCERY I", 1, 20160401, 20160601)
+```
+
+In this plot we clearly see the impact of a strong earthquake on April 16 2016, as "people rallied in relief efforts donating water and other first need products which greatly affected supermarket sales for several weeks after the earthquake." ([data description](https://www.kaggle.com/c/favorita-grocery-sales-forecasting/data))
+
+
+Consequently, this effect is less pronounced, but still visible, in the sales of e.g. "CLEANING" items:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 17", out.width="100%"}
+plot_family_store_zoom("CLEANING", 1, 20160401, 20160601)
+```
+
+Other groupings by different parameters are easily possible by modifying the helper functions. Feel free to fork this kernel and create tailored visualisations.
+
+
+**In summary:** while we could forecast every single *item_nbr* independently there is a lot to gain from looking at patterns within groups of items that might show similar behaviour. These relations will be the subject of the following sections.
+
+
+
+# Sales numbers
+
+After visualising the individual distributions and specific sales over time, our next section will focus on the overall sales numbers and will study how these are affected by the various individual features.
+
+
+## Training data
+
+Here we only focus on the features that are immediately available in the training data. We start with overlapping density plots sales and refunds:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 18", out.width="100%"}
+p1 <- train %>%
+  filter(unit_sales > 0) %>%
+  ggplot(aes(unit_sales, fill = onpromotion)) +
+  geom_density(bw = 0.2, alpha = 0.5) +
+  scale_x_log10()
+
+p2 <- train %>%
+  filter(unit_sales < 0) %>%
+  ggplot(aes(abs(unit_sales), fill = onpromotion)) +
+  geom_density(bw = 0.2, alpha = 0.5) +
+  scale_x_log10() +
+  labs(x = "Refunds (= negative sales)")
+
+layout <- matrix(c(1,2),2,1,byrow=TRUE)
+multiplot(p1, p2, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- There are slightly more sales for unit on promotion, but the difference is small.
+
+- For refunds there are of course no promotions, but we still see a small difference for between those sales for which the promotion status is known and those for which it is not. The latter appear to have slightly larger numbers.
+
+
+Next, we will have a look at the different stores via boxplots. Here, we reorder the *store\_nbr* by decreasing median sales. The colours are defined by the original (sequential) order and therefore are the same between the two plots:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 19", out.width="100%"}
+p1 <- train %>%
+  filter(unit_sales > 0) %>%
+  ggplot(aes(reorder(store_nbr, -unit_sales, FUN = median), unit_sales, color = store_nbr)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  theme(legend.position = "none") +
+  labs(x = "Store number (reordered)")
+
+p2 <- train %>%
+  filter(unit_sales < 0) %>%
+  ggplot(aes(reorder(store_nbr, -abs(unit_sales), FUN = median), abs(unit_sales), color = store_nbr)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  theme(legend.position = "none") +
+  labs(x = "Store number (reordered)", y = "Refunds (= negative sales)")
+
+layout <- matrix(c(1,2),2,1,byrow=TRUE)
+multiplot(p1, p2, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- The differences in sales appear to be small in size and statistically not very significant. All of the boxes overlap.
+
+- In terms of refunds there is a little bit more of a trend, and some stores have individual high-refund items.
+
+
+Next we will have a look at the total sales per date (upper panel) and the mean sales per *day of the week* vs *month of the year* as a heatmap in the lower panel:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 20", out.width="100%"}
+p1 <- train %>%
+  group_by(date) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  ggplot(aes(date, sales)) +
+  geom_line(color = "blue")
+
+p2 <- train %>%
+  mutate(wday = wday(date, label = TRUE),
+         month = month(date, label = TRUE)) %>%
+  mutate(wday = fct_relevel(wday, c("Mon", "Tues", "Wed", "Thurs", "Fri", "Sat", "Sun"))) %>%
+  group_by(wday, month) %>%
+  summarise(mean_sales = mean(unit_sales)) %>%
+  ggplot(aes(month, wday, fill = mean_sales)) +
+  geom_tile() +
+  labs(x = "Month of the year", y = "Day of the week") +
+  scale_fill_distiller(palette = "Spectral")
+
+layout <- matrix(c(1,2),2,1,byrow=TRUE)
+multiplot(p1, p2, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- The sales volume rises over time, with notable spikes and hikes especially near Christmas.
+
+- The *weekday* and *month* information, contained in the *date*, shows us that weekends have significantly higher average sales numbers. Thursdays, on the other hand, have consistently lower sales. Tuesdays seem to be slightly lower.
+
+- The higher level for December is most likely because of Christmas.
+
+
+Finally (for the *train* data), as a teaser for the proper *items* analysis here are the top 10 selling single items over all stores:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 21", fig.height=3.5, out.width="100%"}
+train %>%
+  filter(unit_sales > 0) %>%
+  group_by(item_nbr) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  arrange(desc(sales)) %>%
+  head(10) %>%
+  ggplot(aes(reorder(item_nbr, -sales, FUN = min), sales)) +
+  geom_point(size = 2, color = "red") +
+  labs(x = "Item number (reordered)") +
+  ggtitle("The top 10 selling items")
+  
+```
+
+And the number 1 is:
+
+```{r}
+items %>%
+  filter(item_nbr == 1503844)
+```
+
+Perishable produce. Bit anti-climactic, but better than nothing.
+
+
+## Stores: location and type
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 22", out.width="100%"}
+foo <- train %>%
+  select(store_nbr, unit_sales) %>%
+  left_join(stores, by = "store_nbr")
+
+p1 <- foo %>%
+  group_by(city) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  ggplot(aes(reorder(city, -sales, FUN = min), sales,
+             fill = reorder(city, -sales, FUN = min))) +
+  geom_col() +
+  theme(legend.position = "none", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9)) +
+  labs(x = "City (reordered)", y = "Total sales")
+
+p2 <- foo %>%
+  group_by(state) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  ggplot(aes(reorder(state, -sales, FUN = min), sales,
+             fill = reorder(state, -sales, FUN = min))) +
+  geom_col() +
+  theme(legend.position = "none", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9)) +
+  labs(x = "State (reordered)", y = "Total sales")
+
+p3 <- foo %>%
+  group_by(type) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  ggplot(aes(reorder(type, -sales, FUN = min), sales,
+             fill = reorder(type, -sales, FUN = min))) +
+  geom_col() +
+  theme(legend.position = "none") +
+  labs(x = "Type (reordered)", y = "Total sales")
+
+p4 <- foo %>%
+  mutate(cluster = as.factor(cluster)) %>%
+  group_by(cluster) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  ggplot(aes(reorder(cluster, -sales, FUN = min), sales,
+             fill = reorder(cluster, -sales, FUN = min))) +
+  geom_col() +
+  theme(legend.position = "none") +
+  labs(x = "Cluster (reordered)", y = "Total sales")
+
+layout <- matrix(c(1,2,1,2,1,2,3,4,3,4),5,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- Most likely due to containing the largest number of stores, the *city* Quito has by far the largest number of sales overall; followed by Cayambe on 2nd place. Consequently, Pichincha is the *state* with the highest *total sales* (compare Fig. 4). Both *city* and *state* show a certain amount of variation in the average sale numbers.
+
+- The *stores* of *types* "A" and "D" are selling the most units. There are only half as much "A" stores than "D" stores (Fig. 3), which could mean that the "A" stores are larger.
+
+- The *cluster* feature also shows a clear variation in sales numbers over about an order of magnitude.
+
+
+Next we examine the total *sales* evolution for each store *type* and location state. In both plots we have removed a few *dates* with very low *sales* for the sake of a cleaner plot:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 23", out.width="100%"}
+foo <- train %>%
+  select(store_nbr, unit_sales, date) %>%
+  left_join(stores, by = "store_nbr")
+
+foo %>%
+  group_by(date, type) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  filter(sales > 600) %>%
+  ggplot(aes(date, sales, color = type)) +
+  geom_line()
+```
+
+We find that the *sales* volume for *types* "A" and "D" is very similar most of the times. The same is true for *types* "B" and "C" on a lower level. Stores of *type* "E" have notably the fewest overall sales.
+
+
+For separating *sales* by *state* we choose a facet overview. Note the logarithmic y-axes:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 24", out.width="100%"}
+foo %>%
+  group_by(date, state) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  filter(sales > 200) %>%
+  ggplot(aes(date, sales)) +
+  geom_line(color = "blue") +
+  scale_y_log10() +
+  facet_wrap(~ state)
+```
+
+We find:
+
+- "Manabi" shows the most notable increase in *sales* over time: from the level of "Santa Elena" in 2013 up to "Azuay" in 2017. There are several jumps in the "Manabi" time series, most clearly in 2014 and recently in 2017.
+
+- The store in "Pastaza" was only opened in late 2015. This needs to be taken into account when making predictions based on store-aggregates before 2015.
+
+
+## Items: family classification
+
+Here we plot the sales numbers for the *family* categories together with the statistics for *perishable* items and the top selling *classes*:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 25", out.width="100%"}
+foo <- train %>%
+  select(item_nbr, unit_sales) %>%
+  mutate(item_nbr = as.character(item_nbr)) %>%
+  left_join(items %>% mutate(item_nbr = as.character(item_nbr)), by = "item_nbr")
+
+p1 <- foo %>%
+  group_by(family) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  ungroup() %>%
+  mutate(family = str_sub(family, start = 1, end = 19)) %>%
+  ggplot(aes(reorder(family, -sales, FUN = min), sales,
+             fill = reorder(family, -sales, FUN = min))) +
+  geom_col() +
+  theme(legend.position = "none", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9)) +
+  labs(x = "Item family (reordered)", y = "Total sales") +
+  scale_y_log10() +
+  scale_x_discrete()
+
+p2 <- foo %>%
+  group_by(perish) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  ggplot(aes(perish, sales, fill = perish)) +
+  geom_col() +
+  theme(legend.position = "none") +
+  labs(y = "Total sales")
+
+p3 <- foo %>%
+  group_by(class) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  arrange(desc(sales)) %>%
+  head(10) %>%
+  ggplot(aes(reorder(class, -sales, FUN = min), sales, fill = reorder(class, -sales, FUN = min))) +
+  geom_col() +
+  theme(legend.position = "none") +
+  labs(x = "Best selling item classes", y = "Total sales") +
+  coord_flip()
+
+layout <- matrix(c(1,1,2,3),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- The upper panel is a logarithmic plot that spans more than 4 orders of magnitude. The *family* names have been truncated to their shortest but still distinct length to save some space on the plot.
+
+- "GROCERY I" is the best selling group. "GROCERY II" is somewhere in the middle, but then sequels are rarely as good as the original. "BOOKS" sell the fewest units.
+
+- The sales for *perishable* vs non-perishable items are relatively similar, but still different by a factor of about 2.5.
+
+- Among the top 10 selling *classes* there is variation by more than a factor of 2.
+
+
+Comparing the total *sales* time series of the *perishable* vs not perishable items, we find that during 2017 the *sales* of non-perishable items appear to increase faster:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 26", fig.height=3.5, out.width="100%"}
+foo <- train %>%
+  select(item_nbr, unit_sales, date) %>%
+  mutate(item_nbr = as.character(item_nbr)) %>%
+  left_join(items %>% mutate(item_nbr = as.character(item_nbr)), by = "item_nbr") %>%
+  select(item_nbr, date, unit_sales, family, perish)
+
+foo %>%
+  group_by(date, perish) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  ggplot(aes(date, sales, color = perish)) +
+  geom_line() +
+  geom_smooth(aes(linetype = perish), color = "black", method = "loess", span = 1/2)
+```
+
+Here the unbinned curves show practically the same short-term variation. The smoothed trends are very similar a first, but during the last year or two the *perishable* item *sales* became flatter than the non-perishable ones. This will be important for accurately predicting differences in the overall trends for both groups.
+
+
+Now we will look at a facet plot of the *sales* in the different item *families* over time:
+
+```{r message = FALSE, split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 27", out.width="100%"}
+foo %>%
+  group_by(date, family) %>%
+  summarise(sales = sum(unit_sales)) %>%
+  #filter(sales > 200) %>%
+  ggplot(aes(date, sales)) +
+  geom_line(color = "dark green") +
+  scale_y_log10() +
+  facet_wrap(~ family)
+```
+
+We find:
+
+- For some classification *families* we have data since 2013. Others start to appear later; most prominently "BOOKS" in late 2016. These step-by-step additions to the supermarket chain's portfolio can explain some of the jumps we have seen in other time series.
+
+- Overall, there are only slight increases in sales volume over time for most *families* (but beware again the logarthmic y-axis). "PRODUCE" shows an interesting pattern where sales go to practically zero for significant stretches of time. It's possible that this effect is caused by our 10% sampling, but very unlikely so since all other *families* don't show such a feature.
+
+
+## Oil: price changes and sales impact
+
+This section will study the changes in *sales* vs the fluctuations in the *oil price*. First, this is an overlay plot of the two time series:
+
+```{r message = FALSE, split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 28", out.width="100%"}
+foo <- train %>%
+  group_by(date) %>%
+  summarise(sales = sum(unit_sales))
+
+oil_back <- oil %>%
+    filter(date > min(foo$date))
+oil_back <- oil_back %>%
+    mutate(oilprice = ( min(foo$sales, na.rm = TRUE) +
+      (oilprice-min(oilprice, na.rm = TRUE))/(max(oilprice, na.rm = TRUE) - min(oilprice, na.rm = TRUE)) *
+        (max(foo$sales, na.rm = TRUE) - min(foo$sales, na.rm = TRUE)) ))
+  
+foo %>%
+  ggplot(aes(date, sales)) +
+  geom_line() +
+  geom_line(data = oil_back, aes(date, oilprice), color = "blue") +
+  ggtitle("Total sales (black) with oilprice (blue)")
+```
+
+We find that over time the *sales* increase and the *oil price* drops. The large *oil price* decrease during the 2nd half of 2014 might have affected the lower sales numbers in the 1st half of 2015 (compared to the on average higher level in late 2014). Over the last year, the *oil price* was relatively stable.
+
+
+Now we will parametrise these changes by computing the 1-day, 7-day, and 30-day lag for the time series of all *sales* as well as the *oil price*, respectively. This way we can compare drops and rises on a daily, weekly, and (approximately) monthly scale between the two parameters. This is what the corresponding correlation coefficients look like:
+
+```{r message = FALSE, split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 29", fig.height=3.5, out.width="100%"}
+bar <- foo %>%
+  left_join(oil, by = "date") %>%
+  mutate(oil1 = oilprice - lag(oilprice,1),
+         oil7 = oilprice - lag(oilprice,7),
+         oil30 = oilprice - lag(oilprice,30),
+         sales1 = sales - lag(sales,1),
+         sales7 = sales - lag(sales,7),
+         sales30 = sales - lag(sales,30)
+         ) %>%
+  filter(!is.na(oil30) & !is.na(oil1) & !is.na(sales30) & !is.na(oil7))
+
+bar %>%
+  select(-date) %>%
+  cor(use="complete.obs", method = "spearman") %>%
+  corrplot(type="lower", tl.col = "black",  diag=FALSE, method="number")
+```
+
+In simplest terms: this shows whether two features are connected so that one changes with a predictable trend if you change the other. The closer this coefficient is to zero the weaker is the correlation. Both 1 and -1 are the ideal cases of perfect correlation and anti-correlation.
+
+We find:
+
+- There is the expected anti-correlation between the two time series; this is just the capturing the opposite trends over time.
+
+- More interesting is the lack of signal in the bottom middle block, between the different *sales* indices vs *oil price* indices. This tells us that changes in one time series had no significant impact on the other time series over the duration of our data.
+
+- The weak correlations within the *sales* and *oil price* indices reflect the overall trend.
+
+This analysis is already getting into feature-engineering territory, which is why we will keep other ideas like this for a later section.
+
+
+# Multi-parameter relations
+
+After understanding our different data sets in relative isolation we will now join them together to tap the full potential of our analysis. Those interactions will provide us with the necessary input for our predictive models, but they always need to be viewed in the context of the individual feature properties to really see what's going on. That's why the previous sections were important and should ideally not be skipped during an EDA.
+
+## Promotions for items and stores
+
+The impact of periods of *promotions* for specific items and stores is best understood when joining the *train*, *items*, and *stores* data sets. Here we first look at the *items* and their families, with a special focus on *perishable* items.
+
+This plot shows the *median sales* statistics for the *onpromotion* status of groups of *items*. We only compare the sales items for which we have both *promotion* and *non-promotion* entries, so that we can compare like with like. We are using boxplots to get an idea about the distribution properties. The colour scheme is shown in the top right corner and is consistent throughout the plot. Except for the top right plot we remove the NAs in the *onpromotion* feature:
+
+```{r message = FALSE, split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 30", out.width="100%"}
+foo <- train %>%
+  group_by(item_nbr, onpromotion) %>%
+  summarise(med_sales = median(unit_sales)) %>%
+  filter(!is.na(onpromotion)) %>%
+  spread(onpromotion, med_sales, fill = NA) %>%
+  filter(!is.na(`TRUE`) & !is.na(`FALSE`)) %>%
+  gather(`TRUE`, `FALSE`, key = "promo", value = "med_sales") %>%
+  ungroup()
+
+bar <- foo %>%
+  mutate(item_nbr = as.character(item_nbr)) %>%
+  left_join(items %>% mutate(item_nbr = as.character(item_nbr)), on = "item_nbr")
+
+p1 <- foo %>%
+  ggplot(aes(promo, med_sales, color = promo)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  theme(legend.position = "none")
+
+p2 <- bar %>%
+  ggplot(aes(perish, med_sales, color = promo)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  theme(legend.position = "none")
+
+p3 <- train %>%
+  mutate(item_nbr = as.character(item_nbr)) %>%
+  left_join(items %>% mutate(item_nbr = as.character(item_nbr)), on = "item_nbr") %>%
+  ggplot(aes(perish, fill = onpromotion)) +
+  geom_bar(position = "fill")
+
+p4 <- bar %>%
+  mutate(family = str_sub(family, start = 1, end = 19)) %>%
+  ggplot(aes(reorder(family, -med_sales, FUN = median), med_sales, color = promo)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  theme(legend.position = "none", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9)) +
+  labs(x = "Family (reordered)")
+
+layout <- matrix(c(1,2,3,1,2,3,4,4,4,4,4,4,4,4,4),5,3,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+``` 
+
+We find:
+
+- *Promotions* lead to somewhat higher sales on average. However, the difference is not large and the boxes overlap considerably.
+
+- This slight difference is preserved in the *perishable* vs non-perishable statistics, where we also see the trend for perishable items to have slight higher median sales.
+
+- In general, the a higher percentage of *perishable* items have been *on promotion* than non-perishable ones. There are also fewer NAs for the perishable items. This particular plot looks at all items, not just the pairwise comparisons.
+
+- We have again re-ordered the *family* vs *median sales* plot according to decreasing median sales volume (for all *promotion* values).  This shows us an overall trend of *median sales*, but no really strong signals for *promotion* items for any *family*. However, there are a few notable cases such as "LADIESWEAR" or "SCHOOL AND OFFICE SUPPLIES" where the *promotion* status seems to have at least a certain impact.
+
+
+The impact of the *promotion* status on single items can be visualised by comparing the *median sales* with *promotion* versus the median sales without promotion. Here, every data point is a specific *item\_nbr* and we compare only those that have both *promotion* and non-promotion entries. We first create a scatter plot of the respective *median sales* and then a *ridgeline plot* (through [ggridges](https://cran.r-project.org/web/packages/ggridges/)) to compare the respective density curves. Each plot is colour-coded by the *perishable* feature:
+
+```{r message = FALSE, split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 31", out.width="100%"}
+p1 <- bar %>%
+  spread(promo, med_sales, fill = NA) %>%
+  mutate(promo_diff = `TRUE` - `FALSE`) %>%
+  ggplot(aes(`TRUE`, `FALSE`, colour = perish)) +
+  geom_abline(slope = 1, intercept = 0) +
+  geom_jitter(height = 0.01) +
+  scale_y_log10() +
+  scale_x_log10() +
+  labs(x = "Median sales on promotion", y = "Median sales /wo promotion") +
+  theme(legend.position = "none")
+
+p2 <- bar %>%
+  spread(promo, med_sales, fill = NA) %>%
+  mutate(promo_diff = `TRUE` - `FALSE`,
+         ave_sales = as.factor(round(`TRUE`+`FALSE`/2))) %>%
+  filter( (abs(promo_diff) < 50) & (as.integer(ave_sales) < 28) ) %>%
+  ggplot(aes(promo_diff, ave_sales, fill = perish)) +
+  geom_density_ridges(alpha = 0.5) +
+  theme(legend.position = "bottom") +
+  labs(x = "Promotion sales minus non-promotion sales", y = "Overall average sales")
+
+layout <- matrix(c(1,2),1,2,byrow=TRUE)
+multiplot(p1, p2, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- Our scatter cloud is skewed towards the right of the solid black line that represents identity. This confirms that *onpromotion* items have on average slightly higher sales. We also see that the the *perishable* items appear to have a lower variance than the non-perishable products.
+
+- This impression is mostly confirmed by the ridgeline plot, in which we stratify the density curves by (rounded) *average sales* (here: the mean of the two medians). Here we see that as the average sales volume increases so does the width of the distribution. This is not surprising, because for an average of only a few sales units there is not much space to vary.
+
+- What is noteworthy, however, is that the *perishable* items retain a narrower distribution than the non-perishable ones; and that the latter move further towards a higher difference in sales as numbers increase. 
+
+
+The next figure uses a ridgeline plot by *item* family, and shows a filled barplot for *all* item *families* with their *perishable* status (not just the *promotion*/non-promotion pairs):
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 32", out.width="100%"}
+p1 <- bar %>%
+  spread(promo, med_sales, fill = NA) %>%
+  mutate(promo_diff = `TRUE` - `FALSE`) %>%
+  filter( (abs(promo_diff) < 10)) %>%
+  ggplot(aes(promo_diff, family, fill = perish)) +
+  geom_density_ridges(alpha = 0.5) +
+  theme(legend.position = "none", axis.text.y = element_blank()) +
+  labs(x = "Promotion sales minus non-promotion sales") +
+  coord_cartesian(xlim = c(-5,5))
+
+p2 <- items %>%
+  ggplot(aes(family, fill = perish)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  labs(y = "Total perishable proportion", x = "")
+  
+layout <- matrix(c(1,1,2,2,2),1,5,byrow=TRUE)
+multiplot(p1, p2, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- Specific item *families* contain either 100% *perishable* good or 100% non-perishable ones. I'm not sure why "Frozen foods" or even one of the "Grocery" families would not contain a single *perishable* item. The rest of the *perishable* vs non-perishable item *families* look realistic, although certain beverages also have a limited shelf life.
+
+- For some *families* the *promotions* have a greater impact than for others. "SCHOOL AND OFFICE SUPPLIES" or "SEAFOOD" are examples for density distributions that are shifted notably towards the right (where *promotion* sales outperform non-promotion sales more strongly). 
+
+
+Now we go a step further and also include the *store* in our statistics. We will slice our *median sales* statistics by store *type* and *city*, as well as *promotion* status in the same colours as above:
+
+```{r split=FALSE, fig.align = 'default', warning = FALSE, fig.cap ="Fig. 33", out.width="100%"}
+foo <- train %>%
+  group_by(item_nbr, store_nbr, onpromotion) %>%
+  summarise(med_sales = median(unit_sales)) %>%
+  filter(!is.na(onpromotion)) %>%
+  spread(onpromotion, med_sales, fill = NA) %>%
+  filter(!is.na(`TRUE`) & !is.na(`FALSE`)) %>%
+  gather(`TRUE`, `FALSE`, key = "promo", value = "med_sales") %>%
+  ungroup()
+
+bar <- foo %>%
+  mutate(store_nbr = as.character(store_nbr)) %>%
+  left_join(stores %>% mutate(store_nbr = as.character(store_nbr)), by = "store_nbr")
+
+p1 <- bar %>%
+  ggplot(aes(type, med_sales, color = promo)) +
+  geom_boxplot() +
+  scale_y_log10()
+
+p2 <- bar %>%
+  ggplot(aes(city, med_sales, color = promo)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  theme(legend.position = "none", axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9))
+
+layout <- matrix(c(1,2),2,1,byrow=TRUE)
+multiplot(p1, p2, layout=layout)
+p1 <- 1; p2 <- 1; p3 <- 1; p4 <- 1; p5 <- 1
+```
+
+We find:
+
+- For each store *type* the *onpromotion* items sell slightly better than the normal ones; but again there is no strong difference for any of them.
+
+- A similar pattern can be found for the different cities. The consistency here is remarkable in itself.
+
+
+---
+
+To be continued.

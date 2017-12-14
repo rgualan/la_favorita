@@ -1,5 +1,5 @@
-la_favorita
-==============================
+# Corporacion Favorita Grocery Sales Forecasting
+================================================
 
 Kaggle challenge sponsored by corporation La Favorita
 
