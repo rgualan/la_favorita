@@ -83,6 +83,7 @@ vignettes/*.pdf # produced vignettes
 # exclude data from source control by default
 /data
 /input
+/output
 
 # exclude temporal files
 *.pid
