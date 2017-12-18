@@ -109,6 +109,10 @@ x1 = train[(train['yea'] != 2016)]
 x2 = train[(train['yea'] == 2016)]
 del train; gc.collect();
 
+# debug
+#x1.to_csv('../output/x1.csv')
+#raise Exception('debug')
+
 y1 = x1['transactions'].values
 y2 = x2['transactions'].values
 

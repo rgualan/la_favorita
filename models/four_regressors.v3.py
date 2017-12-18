@@ -99,12 +99,12 @@ def df_transform_date(df):
 
 # Encode categorical variables
 # a)
-items = df_lbl_enc_2(items, ['family'])
-stores = df_lbl_enc_2(stores, ['type','city','state'])
+# items = df_lbl_enc_2(items, ['family'])
+# stores = df_lbl_enc_2(stores, ['type','city','state'])
 
 # b)
-# items = pd.get_dummies(items, columns = ['family'] )
-# stores = pd.get_dummies(stores, columns = ['type','city','state'] ) #TODO: encode 
+items = pd.get_dummies(items, columns = ['family'] )
+stores = pd.get_dummies(stores, columns = ['type','city','state'] ) 
 
 # Weight for calculating the error metric
 items['perishable_w'] = items['perishable'].map({False:1.0, True:1.25}) 
@@ -144,7 +144,8 @@ print_runtime(start_dp, time.time())
 
 # Error metric
 def NWRMSLE(y, pred, w):
-    return metrics.mean_squared_error(y, pred, sample_weight=w)**0.5
+    #return metrics.mean_squared_error(y, pred, sample_weight=w)**0.5
+    return metrics.mean_squared_error(y, pred)**0.5
 
 col = [c for c in train if c not in ['id', 'unit_sales','perishable_w','perishable','transactions']]
 print(col)
@@ -153,13 +154,16 @@ x1 = train[(train['yea'] != 2016)]
 x2 = train[(train['yea'] == 2016)]
 #x1 = train[(train['mon'] != 8)]
 #x2 = train[(train['mon'] == 8)]
+x1 = train[ (train['date'] < '2017-08-01') & (train['date'] >= '2016-01-01') ]
+x2 = train[(train['date'] >= '2017-08-01')]
+
 y1 = x1['transactions'].values
 y2 = x2['transactions'].values
 del train; gc.collect();
 
 # debug
-x1.to_csv('../output/x1_v2.csv')
-x2.to_csv('../output/x2_v2.csv')
+#x1.to_csv('../output/x1_v2.csv')
+#x2.to_csv('../output/x2_v2.csv')
 #raise Exception('debug')
 
 
@@ -173,16 +177,22 @@ np.random.seed(round(method + 123*method + 456*method) )
 
 # Model
 print('Multilayer perceptron (MLP) neural network 01')
-r = MLPRegressor(hidden_layer_sizes=(3,), max_iter=30)
+r = MLPRegressor(hidden_layer_sizes=(3,), max_iter=1000)
 r.fit(x1[col], y1)
 m1 = NWRMSLE(y2, r.predict(x2[col]), x2['perishable_w'])
-tdf = pd.DataFrame( {'y_tx':y2, 'yh_tx':r.predict(x2[col])} )
-tdf.to_csv('../output/pred_tx.csv')
+#tdf = pd.DataFrame( {'y_tx':y2, 'yh_tx':r.predict(x2[col])} )
+#tdf.to_csv('../output/pred_tx.csv')
+print("Error: %f"%(m1))
 
 test['transactions'] = r.predict(test[col])
 test['transactions'] = test['transactions'].clip(lower=0.+1e-12)
 
 #test['transactions'] = (np.expm1(test['transactions'])).clip(lower=cut)
+
+
+
+raise Exception('debug!')
+
 
 
 ### Predict future unit sales 
