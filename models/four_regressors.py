@@ -33,7 +33,8 @@ print('Datasets reading')
 # read datasets
 dtypes = {'id':'int64', 'item_nbr':'int32', 'store_nbr':'int8', 'onpromotion':str}
 data = {
-    'tra': pd.read_csv('../input/train.csv', dtype=dtypes, parse_dates=['date']),
+    #R 'tra': pd.read_csv('../input/train.csv', dtype=dtypes, parse_dates=['date']),
+    'tra': pd.read_csv('../input/processed/train_4r.csv', dtype=dtypes, parse_dates=['date']),
     'tes': pd.read_csv('../input/test.csv', dtype=dtypes, parse_dates=['date']),
     'ite': pd.read_csv('../input/items.csv'),
     'sto': pd.read_csv('../input/stores.csv'),
@@ -48,7 +49,9 @@ print('Datasets processing')
 
 # Filter the training data to contain only august starting from the day 16
 # which is reasonable since the test period is 2017-08-16 until 2017-08-31  
-train = data['tra'][(data['tra']['date'].dt.month == 8) & (data['tra']['date'].dt.day > 15)]
+#R train = data['tra'][(data['tra']['date'].dt.month == 8) & (data['tra']['date'].dt.day > 15)]
+train = data['tra']
+
 del data['tra']; gc.collect();
 target = train['unit_sales'].values
 target[target < 0.] = 0.
