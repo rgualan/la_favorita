@@ -9,58 +9,89 @@ from sklearn.metrics import mean_squared_error
 from keras.models import Sequential
 from keras.layers.core import Dense, Dropout, Activation
 from keras.layers import LSTM
-from keras import callbacks
-from keras.callbacks import ModelCheckpoint
 import pickle
 
 
-df_train = pd.read_csv(
-    #'../input/train.csv', usecols=[1, 2, 3, 4, 5],
-    '../input/processed/train_from2017.csv', usecols=[1, 2, 3, 4, 5],
-    dtype={'onpromotion': bool},
-    converters={'unit_sales': lambda u: np.log1p(float(u)) if float(u) > 0 else 0},
-    parse_dates=["date"] #,
-    #skiprows=range(1, 66458909)  # 2016-01-01
-)
+# Pre-processing dataset
+if False:
 
-df_test = pd.read_csv(
-    "../input/test.csv", usecols=[0, 1, 2, 3, 4],
-    dtype={'onpromotion': bool},
-    parse_dates=["date"]  
-).set_index(
-    ['store_nbr', 'item_nbr', 'date']
-)
+    df_train = pd.read_csv(
+        #'../input/train.csv', usecols=[1, 2, 3, 4, 5],
+        '../input/processed/train_from2017.csv', usecols=[1, 2, 3, 4, 5],
+        dtype={'onpromotion': bool},
+        converters={'unit_sales': lambda u: np.log1p(float(u)) if float(u) > 0 else 0},
+        parse_dates=["date"] #,
+        #skiprows=range(1, 66458909)  # 2016-01-01
+    )
 
-items = pd.read_csv(
-    "../input/items.csv",
-).set_index("item_nbr")
+    df_test = pd.read_csv(
+        "../input/test.csv", usecols=[0, 1, 2, 3, 4],
+        dtype={'onpromotion': bool},
+        parse_dates=["date"]
+    ).set_index(
+        ['store_nbr', 'item_nbr', 'date']
+    )
 
-#df_2017 = df_train.loc[df_train.date>=pd.datetime(2017,1,1)]
-df_2017 = df_train
-#del df_train
-
+    items = pd.read_csv(
+        "../input/items.csv",
+    ).set_index("item_nbr")
 
 
+    #df_2017 = df_train.loc[df_train.date>=pd.datetime(2017,1,1)]
+    df_2017 = df_train
+    del df_train
 
-promo_2017_train = df_2017.set_index(
-    ["store_nbr", "item_nbr", "date"])[["onpromotion"]].unstack(
-        level=-1).fillna(False)
-promo_2017_train.columns = promo_2017_train.columns.get_level_values(1)
-promo_2017_test = df_test[["onpromotion"]].unstack(level=-1).fillna(False)
-promo_2017_test.columns = promo_2017_test.columns.get_level_values(1)
-promo_2017_test = promo_2017_test.reindex(promo_2017_train.index).fillna(False)
-promo_2017 = pd.concat([promo_2017_train, promo_2017_test], axis=1)
-del promo_2017_test, promo_2017_train
+    #df_2017 = pd.merge(df_2017, transactions, how='left')
 
-df_2017 = df_2017.set_index(
-    ["store_nbr", "item_nbr", "date"])[["unit_sales"]].unstack(
-        level=-1).fillna(0)
-df_2017.columns = df_2017.columns.get_level_values(1)
+    promo_2017_train = df_2017.set_index(
+        ["store_nbr", "item_nbr", "date"])[["onpromotion"]].unstack(
+            level=-1).fillna(False)
+    promo_2017_train.columns = promo_2017_train.columns.get_level_values(1)
+    promo_2017_test = df_test[["onpromotion"]].unstack(level=-1).fillna(False)
+    promo_2017_test.columns = promo_2017_test.columns.get_level_values(1)
+    promo_2017_test = promo_2017_test.reindex(promo_2017_train.index).fillna(False)
+    promo_2017 = pd.concat([promo_2017_train, promo_2017_test], axis=1)
+    del promo_2017_test, promo_2017_train
 
-items = items.reindex(df_2017.index.get_level_values(1))
+    df_2017 = df_2017.set_index(
+        ["store_nbr", "item_nbr", "date"])[["unit_sales"]].unstack(
+            level=-1).fillna(0)
+    df_2017.columns = df_2017.columns.get_level_values(1)
+
+    items = items.reindex(df_2017.index.get_level_values(1))
+
+    pickle.dump(df_2017, open('../input/processed/df_2017.pickle', 'wb'))
+    pickle.dump(df_test, open('../input/processed/df_test.pickle', 'wb'))
+    pickle.dump(promo_2017, open('../input/processed/promo_2017.pickle', 'wb'))
+    pickle.dump(items, open('../input/processed/items.pickle', 'wb'))
+    raise Exception("Pickles saved!")
+
+else:
+    print("Loading pickles...")
+    df_2017 = pickle.load(open('../input/processed/df_2017.pickle', 'rb'))
+    promo_2017 = pickle.load(open('../input/processed/promo_2017.pickle', 'rb'))
+    items = pickle.load(open('../input/processed/items.pickle', 'rb'))
+    df_test = pickle.load(open('../input/processed/df_test.pickle', 'rb'))
+
+
+# ## Transactions (experimental)
+# transactions = pd.read_csv(
+#     "../input/processed/sales_completed.csv",
+#     parse_dates=["date"]
+# )
+#
+# txs = promo_2017.stack()
+# txs = pd.DataFrame(txs)
+# txs.reset_index(inplace=True)
+# txs = pd.merge(txs, transactions, how='left')
+# txs.loc[txs.transactions.isnull(), "transactions"] = 0
+# txs = txs.set_index(["store_nbr", "item_nbr", "date"])[["transactions"]].unstack(level=-1).fillna(0)
+# txs.columns = txs.columns.get_level_values(1)
+
 
 def get_timespan(df, dt, minus, periods, freq='D'):
     return df[pd.date_range(dt - timedelta(days=minus), periods=periods, freq=freq)]
+
 
 def prepare_dataset(t2017, is_train=True):
     X = pd.DataFrame({
@@ -73,20 +104,29 @@ def prepare_dataset(t2017, is_train=True):
         "mean_140_2017": get_timespan(df_2017, t2017, 140, 140).mean(axis=1).values,
         "promo_14_2017": get_timespan(promo_2017, t2017, 14, 14).sum(axis=1).values,
         "promo_60_2017": get_timespan(promo_2017, t2017, 60, 60).sum(axis=1).values,
-        "promo_140_2017": get_timespan(promo_2017, t2017, 140, 140).sum(axis=1).values
+        "promo_140_2017": get_timespan(promo_2017, t2017, 140, 140).sum(axis=1).values#,
+#        "mean_tx_14": get_timespan(txs, t2017, 14, 14).mean(axis=1).values
     })
+
     for i in range(7):
         X['mean_4_dow{}_2017'.format(i)] = get_timespan(df_2017, t2017, 28-i, 4, freq='7D').mean(axis=1).values
         X['mean_20_dow{}_2017'.format(i)] = get_timespan(df_2017, t2017, 140-i, 20, freq='7D').mean(axis=1).values
+
     for i in range(16):
         X["promo_{}".format(i)] = promo_2017[
             t2017 + timedelta(days=i)].values.astype(np.uint8)
+
+    # for i in range(16):
+    #     X['txs_{}'.format(i)] = txs[t2017 + timedelta(days=i)].values
+
     if is_train:
         y = df_2017[
             pd.date_range(t2017, periods=16)
         ].values
         return X, y
+
     return X
+
 
 print("Preparing dataset...")
 t2017 = date(2017, 5, 31)
@@ -141,7 +181,7 @@ for i in range(16):
                sample_weight=sample_weights, validation_data=(xv,yv) ) 
     val_pred.append(model.predict(X_val))
     test_pred.append(model.predict(X_test))
-    
+
 n_public = 5 # Number of days in public test set
 weights=pd.concat([items["perishable"]]) * 0.25 + 1
 print("Unweighted validation mse: ", mean_squared_error(
@@ -165,3 +205,4 @@ df_preds.index.set_names(["store_nbr", "item_nbr", "date"], inplace=True)
 submission = test_ids.join(df_preds, how="left").fillna(0)
 submission["unit_sales"] = np.clip(np.expm1(submission["unit_sales"]), 0, 1000)
 submission.to_csv('lstm.csv', float_format='%.4f', index=None)
+
